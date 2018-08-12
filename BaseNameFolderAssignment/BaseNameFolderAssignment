@@ -1,0 +1,41 @@
+#!/usr/bin/env python
+
+## Import libraries
+import glob  ## Read linux paths
+import os    ## Perform linux commands
+import sys   ## Used in standalone script for reading user input
+import re    ## Used to ignore directories in file list
+
+
+## Save file names as a list
+name = sys.argv[1] + '*'
+
+y = glob.glob(name)
+## Remove directories from search
+y = [x for x in y if re.search(r'\.', x)]
+
+
+## Retain file name w/ extension (i.e. basename.txt)
+basename = [x.split("/")[-1] for x in y]
+
+
+## Remove all extensions
+removed_extensions = [x.split(".")[0] for x in basename]
+directories = list(set(removed_extensions))
+
+## Create new directories (Check if directory already exists)
+for f in directories:
+    try:
+	new_directory = sys.argv[1]+'/'+f
+	print(new_directory)
+        os.mkdir(new_directory)
+    except:
+        print(str(f) + " directory already exists")
+        pass
+
+
+for item in range(len(y)):
+    new_names = sys.argv[1]+removed_extensions[item] + '/' + basename[item]
+    os.rename(y[item], new_names)
+
+
