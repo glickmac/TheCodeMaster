@@ -1,0 +1,87 @@
+---
+title: "Qiime2_to_Phyloseq"
+author: "Cody Glickman"
+date: "10/26/2018"
+output: html_document
+---
+
+## Purpose
+This script details the steps to convert [qiime2](https://docs.qiime2.org/2018.8/concepts/) objects into a [Phyloseq](https://joey711.github.io/phyloseq/) object. The workflow of processing data with Qiime2 can be found at the [Moving Pictures](https://docs.qiime2.org/2018.8/tutorials/moving-pictures/) tutorial. This script is adapted from Pedro J. Torres.
+
+## Requirements
+Qiime2 artifacts needed to convert for phyloseq analysis:
+
+  * Metadata/Mapping File
+  * Table File (.qza)
+  * Taxonomy File (.qza)
+  * Tree File (.qza) {Optional}
+  
+## Convert Qiime2 qza on Command Line
+The chunk below contains commands executed on the command line. Qiime should be installed and in your path. Otherwise the commands can be copied and pasted into the terminal running a qiime environment.  
+
+```{r}
+system('mkdir -p Phyloseq')
+#  mkdir -p Phyloseq
+
+# Export table
+system("qiime tools export 'Demo_Data/table.qza' --output-dir 'Phyloseq/'")
+#  qiime tools export 'Demo_Data/table.qza' --output-dir 'Phyloseq/'
+
+# Export taxonomy
+system("qiime tools export Demo_Data/taxonomy.qza --output-dir Phyloseq/")
+#  qiime tools export Demo_Data/taxonomy.qza --output-dir Phyloseq/
+
+# Export tree
+system("qiime tools export Demo_Data/unrooted-tree.qza --output-dir Phyloseq/")
+#  qiime tools export Demo_Data/unrooted-tree.qza --output-dir Phyloseq/
+```
+
+The header of the taxonomy file must be converted to match proper format for merging with biom file
+```{r}
+system("sed 's/Feature ID/#OTUID/' Phyloseq/taxonomy.tsv | sed 's/Taxon/taxonomy/' | sed 's/Confidence/confidence/' > Phyloseq/biom-taxonomy.tsv")
+
+## Remove redundant file
+system("rm Phyloseq/taxonomy.tsv")
+```
+
+Merge taxonomy with biom file. Qiime in path is also required for this command. The command can be copied and pasted into a terminal with a qiime environment
+```{r}
+system("biom add-metadata \
+    -i Phyloseq/feature-table.biom \
+    -o Phyloseq/taxa_table.biom \
+    --observation-metadata-fp Phyloseq/biom-taxonomy.tsv \
+    --sc-separated taxonomy")
+
+#  biom add-metadata -i Phyloseq/feature-table.biom -o Phyloseq/taxa_table.biom --observation-metadata-fp Phyloseq/biom-taxonomy.tsv --sc-separated taxonomy
+```
+
+
+## Load in Qiime Data
+Now the data is ready to use in Phyloseq! Below we load in the biom table, tree file (optional), and mapping file. Then we combine them into a phyloseq object. There is a warning that can be ignored upon importing the biom table. [Tutorial](http://joey711.github.io/phyloseq/tutorials-index) for processing Phyloseq objects can be found here. 
+
+```{r}
+## Install Phyloseq try http:// if https:// URLs are not supported
+#source("https://bioconductor.org/biocLite.R")
+# biocLite("phyloseq")
+
+library(phyloseq)
+
+biom_data <- import_biom(BIOMfilename = "Phyloseq/taxa_table.biom", treefilename = "Phyloseq/tree.nwk")
+
+## The mapping file is still in the demo data as we did not operate on it
+mapping_file <- import_qiime_sample_data(mapfilename = "Demo_Data/sample-metadata.tsv")
+
+# Merge the OTU and mapping data into a phyloseq object
+phylo <- merge_phyloseq(biom_data, mapping_file)
+#Add names to biom table and check phyloseq objects
+colnames(tax_table(phylo))= c("Kingdom","Phylum","Class","Order","Family","Genus", "Species")
+rank_names(phylo)
+
+
+depths <- sample_sums(phylo)
+depths
+```
+
+And your all set! Good luck processing that data!
+
+
