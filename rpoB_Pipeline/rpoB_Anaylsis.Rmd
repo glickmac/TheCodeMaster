@@ -1,0 +1,149 @@
+---
+title: "rpoB_analysis"
+author: "Cody Glickman"
+date: "11/18/2018"
+output: html_document
+---
+
+## Purpose
+This pipeline details the steps to process rpoB sequencing reads into a format for BLAST processing and subsequent anaylsis. 
+
+## Requirements
+BLAST NR Database
+seqkit
+vsearch 
+Concatenation Script
+  
+## Concatenate rpoB Reads
+The chunk below contains commands executed on the command line. The script concatenate_reads should be located in the folder above the paired unzipped fasta files.    
+
+
+```{}
+## Unzip paired end reads 
+for f in folder/*; do gzip -d $f; done;
+
+## Make directory and move zipped folders
+mkdir -p ZippedReads
+for f in folder/*.gz; do mv $f ZippedReads/; done;
+
+## Convert fastq to fasta
+for f in folder/*; do seqkit fq2fa $f ${f%.*}.fasta; done;
+
+## Run Concatenation
+./concatenate_reads folder/ForwardReads.fasta folder/ReverseReads.fasta
+```
+
+We now have a concatenated read file seperating the reads by 10 N nucleotides since we know the rpoB primers do not overlap. Additional read processing can be done prior to this step to remove low quality reads and perform adapter trimming. This process was automatically performed during post sequencing processing on our sequencer. 
+
+## Dereplicate and OTU Picking
+We begin by dereplicating the individual files. Dereplication combines and counts sequences that match at 100% of the bases to reduce the number of comparisons downstream. Following deprelication we combined multiple reads to create our OTU table. In our dereplication command we rename clusters and singletons with the file identifier seperated by a period and then the cluster number.
+
+```{}
+## Dereplicate the concatenated fastas
+for f in *.fasta; do vsearch --derep_fulllength $f --output derep_$f --sizeout --uc ${f%.*}.uc --relabel ${f%.*}. --fasta_width 0; done;
+
+## Merged deprelicated fastas into a single file 
+cat derep_* > Combined.fasta
+
+## Perform another round of dereplication on the full dataset 
+vsearch --derep_fulllength Combined.fasta --output derep.fasta --sizein --sizeout --uc combined.uc  --fasta_width 0
+
+## Perform Chimera Filter Denovo
+vsearch --cluster_size derep.fasta --id 0.98 --sizein --sizeout --fasta_width 0 --centroids preclustered.fasta
+
+vserch --uchime_denovo preclustered.fasta --sizein --sizeout --fasta_width 0 --nonchimeras nonchimeras.fasta
+
+#Cluster for OTUs and print biom tables
+vsearch --cluster_size nonchimeras.fasta --id 0.97 --sizein --sizeout --fasta_width 0 --uc clustered.uc --relabel OTU_ --centroids otus.fasta --otutabout otutab.txt --biomout otu.biom
+```
+
+## BLAST OTUs to get taxanomic identities
+The otu sequences can be found with otus.fasta and that sequence file can be BLAST against a custom rpoB Database or the NR database to establish sequence identity. I utilize -best_hit_score_edge options to limit return table. I also use evalue to filter low value hits from the resulting table using the BlastParser script. 
+
+```{}
+## BLAST otu sequences
+blastn -query otus.fasta -out BlastResults.txt -outfmt "6 qseqid qlen sseqid evalue bitscore pident nident mismatch gaps stitle qcovs" -db [BLAST Database] -num_threads 12 -max_target_seqs 1 -best_hit_score_edge 0.05 
+
+
+## Parse the results if necessary
+./BlastParser BlastResults.txt 
+```
+
+## Prepare OTU table for visualization
+The OTU table (otutab.txt) is the only document needed to perform alpha and beta diversity statistics. The count data in this matrix is sufficies for the calculations. To perform the alpha and beta diversity analysis, I use R with ggplot and vegan packages. BlastParser script outputs "OTUs.csv" containing two columns (Species and OTU ID). 
+```{r, include = FALSE}
+library(vegan)
+```
+
+```{r}
+## Import need data and packages
+library(reshape2)
+library(ggplot2)
+library(vegan)
+
+otu = read.csv("data/otutable.txt", sep = "\t")
+phylogeny = read.csv("data/OTUs.csv", stringsAsFactors = F)
+
+combined_table = cbind(otu, phylogeny)
+
+row.names(combined_table) = combined_table$X.OTU.ID
+## Remove Columns 
+combined_table$X.OTU.ID = NULL
+combined_table$OTUID = NULL
+
+## Aggregate by overlapping Taxonomy
+grouped_otus = aggregate(. ~ Species, combined_table, sum)
+rownames(grouped_otus) = grouped_otus$Species
+grouped_otus$Species = NULL
+grouped_otus$Sums = rowSums(grouped_otus)
+grouped_otus = grouped_otus[order(grouped_otus$Sums, decreasing = T),]
+grouped_otus$Sums = NULL
+
+## Retain top OTUs 
+x = 15
+
+df_top = grouped_otus[1:x,]
+df_not = grouped_otus[x+1:dim(grouped_otus)[1],]
+df_not = na.omit(df_not)
+
+Other = colSums(df_not)
+df_top = rbind(df_top, "Other" = Other)
+Species = rownames(df_top)
+
+## Normalize by ColSums
+df_top = apply(df_top, 2, as.numeric)
+xdf = as.data.frame(sweep(df_top,2,colSums(df_top),`/`))
+rownames(xdf) = Species
+
+## Melt Dataframe
+xdf$Species = rownames(xdf)
+xdf_m = melt(xdf)
+
+## Clean up environment
+rm(df_not, combined_table, grouped_otus, otu, phylogeny)
+```
+
+## Graph Taxonomy
+Utilizing the melted otu table, plot the resulting bar charts as both a stacked bar plot and circular images. Both images have custom color schemes added using the scale_fill_manual command. A list of ggplot colors can be found [HERE](http://sape.inf.usi.ch/quick-reference/ggplot2/colour). 
+```{}
+# Stacked Bar Plot
+p <- ggplot(data=xdf_m, aes(x=variable, y=value, fill=Species))
+p + geom_bar(aes(), stat="identity", position="stack") + scale_fill_manual(values = c("darkblue", "darkgoldenrod1", "darkseagreen", "darkorchid", "darkolivegreen1", "lightskyblue", "darkgreen", "deeppink", "khaki2", "firebrick", "brown1", "darkorange1", "cyan1", "royalblue4", "darksalmon", "cyan1")) + theme(legend.position="bottom") + guides(fill=guide_legend(nrow=4)) + xlab("Sample") + ylab("Relative Abundance") +theme(axis.text.y = element_text(colour="grey20",size=12,angle=0,hjust=1,vjust=0,face="plain"), axis.title.y = element_text(colour="grey20",size=15,angle=90,hjust=.5,vjust=.5,face="plain"), axis.text.x = element_text(colour="grey20",size=12,angle=0,hjust=0.5,vjust=0,face="bold"),axis.title.x = element_text(colour="grey20",size=15,angle=0,hjust=.5,vjust=.5,face="plain"))
+```
+
+
+
+```{}
+# Ciruclar Plot
+p = ggplot(xdf_m, aes(x=variable, y=value, fill=Species)) +geom_bar(stat = "identity")
+pies = p + coord_polar("x", start = 0)
+pies+ theme(axis.ticks = element_blank(),
+        panel.grid  = element_blank()) + xlab("") + ylab("") 
+```
+
+
+
+
+And your all set! Good luck processing that data!
+
+
